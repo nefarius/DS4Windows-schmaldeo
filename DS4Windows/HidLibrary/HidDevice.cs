@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Security;
+using Windows.Win32.Storage.FileSystem;
 using Microsoft.Win32.SafeHandles;
 namespace DS4Windows
 {
@@ -57,8 +58,8 @@ namespace DS4Windows
             }
         }
 
-        private SECURITY_ATTRIBUTES SecurityAttributes { get; set; }
         public SafeFileHandle SafeReadHandle { get => safeReadHandle; private set => safeReadHandle = value; }
+        [Obsolete("Causes memory overhead, should be refactored.")]
         public FileStream FileStream { get => fileStream; private set => fileStream = value; }
         public bool IsOpen { get => isOpen; private set => isOpen = value; }
         public bool IsExclusive { get => isExclusive; private set => isExclusive = value; }
@@ -135,6 +136,7 @@ namespace DS4Windows
                 NativeMethods.CancelIoEx(SafeReadHandle.DangerousGetHandle(), IntPtr.Zero);
         }
 
+        [Obsolete("Unused.")]
         public bool ReadInputReport(byte[] data)
         {
             if (SafeReadHandle == null)
@@ -206,6 +208,7 @@ namespace DS4Windows
             SafeReadHandle = null;
         }
 
+        [Obsolete("Unused.")]
         public void flush_Queue()
         {
             if (SafeReadHandle != null)
@@ -233,50 +236,29 @@ namespace DS4Windows
             }
         }
 
-        public unsafe ReadStatus ReadFile(byte[] inputBuffer)
+        public unsafe ReadStatus ReadFile(Span<byte> inputBuffer)
         {
-            if (SafeReadHandle == null)
-                SafeReadHandle = OpenHandle(_devicePath, true, enumerate: false);
+            SafeReadHandle ??= OpenHandle(_devicePath, true, false);
 
-            var overlapped = new Overlapped();
+            using AutoResetEvent wait = new(false);
+            NativeOverlapped ov = new() { EventHandle = wait.SafeWaitHandle.DangerousGetHandle() };
 
-            overlapped.OffsetLow = 0;
-            overlapped.OffsetHigh = 0;
-            overlapped.EventHandleIntPtr = PInvoke.CreateEvent(SecurityAttributes, false, true, string.Empty).DangerousGetHandle();
+            if (PInvoke.ReadFile(SafeReadHandle, inputBuffer, null, &ov))
+                // NOTE: this will never hit when overlapped is used
+                return ReadStatus.Success;
 
-            try
-            {
-                var packed = overlapped.Pack(null, inputBuffer);
+            // NOTE: if a timeout is required, use GetOverlappedResultEx instead
+            if (!PInvoke.GetOverlappedResult(SafeReadHandle, ov, out var transferred, new BOOL(true)))
+                return ReadStatus.ReadError;
 
-                var success = PInvoke.ReadFile(SafeReadHandle, inputBuffer, null, packed);
-                if (success)
-                {
-                    return ReadStatus.Success;
-                }
-                else
-                {
-                    var result = PInvoke.WaitForSingleObject((HANDLE)overlapped.EventHandleIntPtr, 500);
+            // this should never happen
+            if (transferred > inputBuffer.Length)
+                throw new InvalidOperationException("We read more than the buffer can hold.");
 
-                    switch (result)
-                    {
-                        case WAIT_EVENT.WAIT_OBJECT_0:
-                            PInvoke.GetOverlappedResult(SafeReadHandle, *packed, out _, false);
-                            return ReadStatus.Success;
-                        case WAIT_EVENT.WAIT_TIMEOUT:
-                            return ReadStatus.WaitTimedOut;
-                        case WAIT_EVENT.WAIT_FAILED:
-                            return ReadStatus.WaitFail;
-                        default:
-                            return ReadStatus.NoDataRead;
-                    }
-                }
-            }
-            finally
-            {
-                PInvoke.CloseHandle((HANDLE)overlapped.EventHandleIntPtr);
-            }
+            return ReadStatus.Success;
         }
 
+        [Obsolete("Leaks memory, do not use.")]
         public ReadStatus ReadWithFileStream(byte[] inputBuffer)
         {
             try
@@ -480,28 +462,21 @@ namespace DS4Windows
 
         }
 
-        private unsafe SafeFileHandle OpenHandle(String devicePathName, Boolean isExclusive, bool enumerate)
+        private SafeFileHandle OpenHandle(string devicePathName, bool isExclusive, bool enumerate)
         {
-            SafeFileHandle hidHandle;
-            uint access = enumerate ? 0 : NativeMethods.GENERIC_READ | NativeMethods.GENERIC_WRITE;
-
-            if (isExclusive)
-            {
-                hidHandle = NativeMethods.CreateFile(devicePathName, access, 0, IntPtr.Zero, NativeMethods.OpenExisting, NativeMethods.FILE_FLAG_NO_BUFFERING | NativeMethods.FILE_FLAG_WRITE_THROUGH | NativeMethods.FILE_ATTRIBUTE_TEMPORARY | NativeMethods.FILE_FLAG_OVERLAPPED, 0);
-            }
-            else
-            {
-                hidHandle = NativeMethods.CreateFile(devicePathName, access, NativeMethods.FILE_SHARE_READ | NativeMethods.FILE_SHARE_WRITE, IntPtr.Zero, NativeMethods.OpenExisting, NativeMethods.FILE_FLAG_NO_BUFFERING | NativeMethods.FILE_FLAG_WRITE_THROUGH | NativeMethods.FILE_ATTRIBUTE_TEMPORARY | NativeMethods.FILE_FLAG_OVERLAPPED, 0);
-            }
-
-            var security = new SECURITY_ATTRIBUTES();
-            security.lpSecurityDescriptor = null;
-            security.bInheritHandle = true;
-            security.nLength = (uint)Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES));
-
-            SecurityAttributes = security;
-
-            return hidHandle;
+            return PInvoke.CreateFile(
+                devicePathName,
+                enumerate
+                    ? (uint)FILE_ACCESS_RIGHTS.FILE_GENERIC_READ
+                    : (uint)(FILE_ACCESS_RIGHTS.FILE_GENERIC_READ | FILE_ACCESS_RIGHTS.FILE_GENERIC_WRITE),
+                isExclusive
+                    ? 0
+                    : FILE_SHARE_MODE.FILE_SHARE_READ | FILE_SHARE_MODE.FILE_SHARE_WRITE,
+                null,
+                FILE_CREATION_DISPOSITION.OPEN_EXISTING,
+                FILE_FLAGS_AND_ATTRIBUTES.FILE_FLAG_OVERLAPPED,
+                null
+            );
         }
 
         public bool readFeatureData(byte[] inputBuffer)

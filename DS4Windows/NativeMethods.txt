@@ -1,4 +1,9 @@
-﻿ReadFile
+﻿CreateFile
+ReadFile
 CreateEvent
 WaitForSingleObject
 GetOverlappedResult
+FILE_CREATION_DISPOSITION
+FILE_FLAGS_AND_ATTRIBUTES
+FILE_ACCESS_RIGHTS
+FILE_SHARE_MODE
