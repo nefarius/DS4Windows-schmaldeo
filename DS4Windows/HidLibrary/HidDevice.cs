@@ -241,14 +241,14 @@ namespace DS4Windows
             SafeReadHandle ??= OpenHandle(_devicePath, true, false);
 
             using AutoResetEvent wait = new(false);
-            NativeOverlapped ov = new() { EventHandle = wait.SafeWaitHandle.DangerousGetHandle() };
+            Overlapped overlapped = new Overlapped(0, 0, wait.SafeWaitHandle.DangerousGetHandle(), null);
+            NativeOverlapped* packed = overlapped.Pack(null, null);
 
-            if (PInvoke.ReadFile(SafeReadHandle, inputBuffer, null, &ov))
-                // NOTE: this will never hit when overlapped is used
+            if (PInvoke.ReadFile(SafeReadHandle, inputBuffer, null, packed))
                 return ReadStatus.Success;
 
             // NOTE: if a timeout is required, use GetOverlappedResultEx instead
-            if (!PInvoke.GetOverlappedResult(SafeReadHandle, ov, out var transferred, new BOOL(true)))
+            if (!PInvoke.GetOverlappedResult(SafeReadHandle, *packed, out var transferred, new BOOL(true)))
                 return ReadStatus.ReadError;
 
             // this should never happen
